@@ -279,7 +279,8 @@ CV_IMPL CvCapture * cvCreateCameraCapture (int index)
 
 #if defined(HAVE_QUICKTIME) || defined(HAVE_QTKIT)
         case CV_CAP_QT:
-            capture = cvCreateCameraCapture_QT (index);
+            // capture = cvCreateCameraCapture_QT (index);
+                capture = cvCreateCameraCapture_AVFoundation(index);
             if (capture)
                 return capture;
             break;

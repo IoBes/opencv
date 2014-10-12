@@ -515,6 +515,7 @@ int jas_cmxform_apply(jas_cmxform_t *xform, jas_cmpixmap_t *in, jas_cmpixmap_t *
             maxchans = pxform->numoutchans;
         }
     }
+    assert(maxchans>0);
     bufmax = APPLYBUFSIZ / maxchans;
     assert(bufmax > 0);
 
@@ -882,9 +883,9 @@ static double gammafn(double x, double gamma)
 
 static int jas_cmshapmatlut_set(jas_cmshapmatlut_t *lut, jas_icccurv_t *curv)
 {
-    jas_cmreal_t gamma;
+    jas_cmreal_t gamma = 0;
     int i;
-    gamma = 0;
+    // gamma = 0;
     jas_cmshapmatlut_cleanup(lut);
     if (curv->numents == 0) {
         lut->size = 2;

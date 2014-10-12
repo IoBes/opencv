@@ -281,7 +281,7 @@ if (NOT IOS)
   if(WITH_QUICKTIME)
     set(HAVE_QUICKTIME YES)
   elseif(APPLE AND CMAKE_COMPILER_IS_CLANGCXX)
-    set(HAVE_QTKIT YES)
+    set(HAVE_QTKIT NO)
   endif()
 endif()
 

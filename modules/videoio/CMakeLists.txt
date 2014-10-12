@@ -136,16 +136,17 @@ if(HAVE_GIGE_API)
 endif(HAVE_GIGE_API)
 
 if(HAVE_AVFOUNDATION)
-  list(APPEND videoio_srcs ${CMAKE_CURRENT_LIST_DIR}/src/cap_avfoundation.mm)
-  list(APPEND VIDEOIO_LIBRARIES "-framework AVFoundation" "-framework QuartzCore")
+  list(APPEND videoio_srcs ${CMAKE_CURRENT_LIST_DIR}/src/cap_avfoundation.mm
+  							${CMAKE_CURRENT_LIST_DIR}/src/UVCCameraControl.mm)
+  list(APPEND VIDEOIO_LIBRARIES "-framework CoreMedia" "-framework Foundation" "-framework CoreFoundation" "-framework IOKit" "-framework CoreVideo" "-framework CoreGraphics" "-framework AVFoundation" "-framework QuartzCore")
 endif()
 
 if(HAVE_QUICKTIME)
   list(APPEND videoio_srcs ${CMAKE_CURRENT_LIST_DIR}/src/cap_qt.cpp)
   list(APPEND VIDEOIO_LIBRARIES "-framework Carbon" "-framework QuickTime" "-framework CoreFoundation" "-framework QuartzCore")
-elseif(HAVE_QTKIT)
-  list(APPEND videoio_srcs ${CMAKE_CURRENT_LIST_DIR}/src/cap_qtkit.mm)
-  list(APPEND VIDEOIO_LIBRARIES "-framework QTKit" "-framework QuartzCore" "-framework AppKit")
+# elseif(HAVE_QTKIT)
+#  list(APPEND videoio_srcs ${CMAKE_CURRENT_LIST_DIR}/src/cap_qtkit.mm)
+#  list(APPEND VIDEOIO_LIBRARIES "-framework QTKit" "-framework QuartzCore" "-framework AppKit")
 endif()
 
 if(HAVE_INTELPERC)

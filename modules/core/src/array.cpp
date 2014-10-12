@@ -1355,7 +1355,8 @@ cvGetCols( const CvArr* arr, CvMat* submat, int start_col, int end_col )
     if( !CV_IS_MAT( mat ))
         mat = cvGetMat( mat, &stub );
 
-    if( !submat )
+    //
+    if( NULL == submat || !submat )
         CV_Error( CV_StsNullPtr, "" );
 
     cols = mat->cols;

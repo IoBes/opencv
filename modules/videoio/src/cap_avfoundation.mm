@@ -30,10 +30,15 @@
  */
 
 #include "precomp.hpp"
+
 #include "opencv2/imgproc.hpp"
 #include <iostream>
 #import <AVFoundation/AVFoundation.h>
+#import <AVFoundation/AVCaptureDevice.h>
 #import <Foundation/NSException.h>
+
+// #include "UVCCameraControl.mm"
+#include <opencv2/videoio/UVCCameraControl.h>
 
 
 /********************** Declaration of class headers ************************/
@@ -51,6 +56,7 @@
  *****************************************************************************/
 
 #define DISABLE_AUTO_RESTART 999
+#define CAPTURE_FRAMES_PER_SECOND		25
 
 @interface CaptureDelegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 {
@@ -99,12 +105,17 @@ class CvCaptureCAM : public CvCapture {
         AVCaptureVideoDataOutput    *mCaptureDecompressedVideoOutput;
         AVCaptureDevice 						*mCaptureDevice;
         CaptureDelegate							*capture;
+    
+        UVCCameraControl *uvcControl;
 
         int startCaptureDevice(int cameraNum);
         void stopCaptureDevice();
 
         void setWidthHeight();
+        void CameraSetOutputProperties(AVCaptureConnection *captureConnection);
         bool grabFrame(double timeOut);
+        CGSize cameraSizeForCameraInput(AVCaptureDeviceInput *input);
+        void configureCameraForHighestFrameRate(AVCaptureDevice *device);
 
         int camNum;
         int width;
@@ -308,6 +319,11 @@ void CvCaptureCAM::stopCaptureDevice() {
 
     [mCaptureDecompressedVideoOutput release];
     [capture release];
+    
+    if (uvcControl != nil) {
+        [uvcControl release];
+    }
+    
     [localpool drain];
 
 }
@@ -317,6 +333,8 @@ int CvCaptureCAM::startCaptureDevice(int cameraNum) {
 
     capture = [[CaptureDelegate alloc] init];
 
+    mCaptureSession = [[AVCaptureSession alloc] init] ;
+    
     AVCaptureDevice *device;
     NSArray* devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
     if ([devices count] == 0) {
@@ -339,26 +357,48 @@ int CvCaptureCAM::startCaptureDevice(int cameraNum) {
     NSError* error;
 
     if (device) {
-
+        NSString * manufacturer = device.manufacturer;
+        NSString * modelID = device.modelID; // UVC Camera VendorID_1118 ProductID_1906
+        NSString * uniqueID = device.uniqueID;
+        NSString * localizedName = device.localizedName; // Microsoft® LifeCam Studio(TM)
+        
+        
+        UInt32 locationID = 0;
+        sscanf([[device uniqueID] UTF8String], "0x%8x", (unsigned int *)&locationID);
+        uvcControl = [[UVCCameraControl alloc] initWithLocationID:locationID];
+        
+        
         mCaptureDeviceInput = [[AVCaptureDeviceInput alloc] initWithDevice:device error:&error] ;
-        mCaptureSession = [[AVCaptureSession alloc] init] ;
-
-        /*
-             success = [mCaptureSession addInput:mCaptureDeviceInput];
-
-             if (!success) {
-             cout << "AV Foundation failed to start capture session with opened Capture Device" << endl;
-             [localpool drain];
-             return 0;
-             }
-         */
-
         mCaptureDecompressedVideoOutput = [[AVCaptureVideoDataOutput alloc] init];
 
         dispatch_queue_t queue = dispatch_queue_create("cameraQueue", NULL);
         [mCaptureDecompressedVideoOutput setSampleBufferDelegate:capture queue:queue];
         dispatch_release(queue);
 
+        // AVCaptureSessionPresetMedium
+        [mCaptureSession setSessionPreset:AVCaptureSessionPresetHigh];
+        if ([mCaptureSession canSetSessionPreset:AVCaptureSessionPreset640x480]){
+            [mCaptureSession setSessionPreset:AVCaptureSessionPreset640x480];
+        }
+        
+        [mCaptureSession startRunning];
+        configureCameraForHighestFrameRate(device);
+
+        AVCaptureDeviceFormat * deviceFormat = [mCaptureDevice activeFormat];
+        NSArray * supportedFrameRates = [deviceFormat videoSupportedFrameRateRanges];
+        for (unsigned long i = 0; i < supportedFrameRates.count; i++) {
+            AVFrameRateRange * aRange = supportedFrameRates[i];
+            Float64 maxRate = aRange.maxFrameRate;
+            Float64 minRate = aRange.minFrameRate;
+            CMTime maxDuration = aRange.maxFrameDuration;
+            CMTime minDuration = aRange.minFrameDuration;
+        }
+        
+        
+        CGSize aSize = cameraSizeForCameraInput(mCaptureDeviceInput);
+        
+        if (width == 0 ) width = aSize.width;
+        if (height == 0 ) height = aSize.height;
 
         NSDictionary *pixelBufferOptions ;
         if (width > 0 && height > 0) {
@@ -377,33 +417,27 @@ int CvCaptureCAM::startCaptureDevice(int cameraNum) {
 
         //TODO: add new interface for setting fps and capturing resolution.
         [mCaptureDecompressedVideoOutput setVideoSettings:pixelBufferOptions];
-        mCaptureDecompressedVideoOutput.alwaysDiscardsLateVideoFrames = YES;
+        [mCaptureDecompressedVideoOutput setAlwaysDiscardsLateVideoFrames:YES];
 
 #if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
         mCaptureDecompressedVideoOutput.minFrameDuration = CMTimeMake(1, 30);
 #endif
 
-        //Slow. 1280*720 for iPhone4, iPod back camera. 640*480 for front camera
-        //mCaptureSession.sessionPreset = AVCaptureSessionPresetHigh; // fps ~= 5 slow for OpenCV
-
-        mCaptureSession.sessionPreset = AVCaptureSessionPresetMedium; //480*360
-        if (width == 0 ) width = 480;
-        if (height == 0 ) height = 360;
-
         [mCaptureSession addInput:mCaptureDeviceInput];
         [mCaptureSession addOutput:mCaptureDecompressedVideoOutput];
 
-        /*
-        // Does not work! This is the preferred way (hardware acceleration) to change pixel buffer orientation.
-        // I'm now using cvtranspose and cvflip instead, which takes cpu cycles.
-        AVCaptureConnection *connection = [[mCaptureDecompressedVideoOutput connections] objectAtIndex:0];
-        if([connection isVideoOrientationSupported]) {
-            //NSLog(@"Setting pixel buffer orientation");
-            connection.videoOrientation = AVCaptureVideoOrientationPortrait;
+        
+        AVCaptureConnection *captureConnection = [[mCaptureDecompressedVideoOutput connections] objectAtIndex:0];
+        if ([captureConnection isVideoOrientationSupported])
+        {
+            // AVCaptureVideoOrientationLandscapeLeft
+            // AVCaptureVideoOrientationLandscapeRight
+            // AVCaptureVideoOrientationPortraitUpsideDown
+            AVCaptureVideoOrientation orientation = AVCaptureVideoOrientationLandscapeLeft;
+            [captureConnection setVideoOrientation:orientation];
         }
-        */
-
-        [mCaptureSession startRunning];
+        
+        CameraSetOutputProperties(captureConnection);
 
         grabFrame(60);
         [localpool drain];
@@ -413,6 +447,52 @@ int CvCaptureCAM::startCaptureDevice(int cameraNum) {
     [localpool drain];
     return 0;
 }
+
+CGSize CvCaptureCAM::cameraSizeForCameraInput(AVCaptureDeviceInput *input)
+{
+    NSArray *ports = [input ports];
+    AVCaptureInputPort *usePort = nil;
+    for ( AVCaptureInputPort *port in ports )
+    {
+        if ( usePort == nil || [port.mediaType isEqualToString:AVMediaTypeVideo] )
+        {
+            usePort = port;
+        }
+    }
+    
+    if ( usePort == nil ) return CGSizeZero;
+    
+    CMFormatDescriptionRef format = [usePort formatDescription];
+    CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(format);
+    
+    CGSize cameraSize = CGSizeMake(dim.width, dim.height);
+    
+    return cameraSize;
+}
+
+void CvCaptureCAM::configureCameraForHighestFrameRate(AVCaptureDevice *device)
+{
+    AVCaptureDeviceFormat *bestFormat = nil;
+    AVFrameRateRange *bestFrameRateRange = nil;
+    for ( AVCaptureDeviceFormat *format in [device formats] ) {
+        
+        for ( AVFrameRateRange *range in format.videoSupportedFrameRateRanges ) {
+            if ( range.maxFrameRate > bestFrameRateRange.maxFrameRate ) {
+                bestFormat = format;
+                bestFrameRateRange = range;
+            }
+        }
+    }
+    if ( bestFormat ) {
+        if ( [device lockForConfiguration:NULL] == YES ) {
+            device.activeFormat = bestFormat;
+            device.activeVideoMinFrameDuration = bestFrameRateRange.minFrameDuration;
+            device.activeVideoMaxFrameDuration = bestFrameRateRange.minFrameDuration;
+            [device unlockForConfiguration];
+        }
+    }
+}
+
 
 void CvCaptureCAM::setWidthHeight() {
     NSAutoreleasePool* localpool = [[NSAutoreleasePool alloc] init];
@@ -426,6 +506,31 @@ void CvCaptureCAM::setWidthHeight() {
     [mCaptureDecompressedVideoOutput setVideoSettings:pixelBufferOptions];
     grabFrame(60);
     [localpool drain];
+}
+
+void CvCaptureCAM::CameraSetOutputProperties(AVCaptureConnection *captureConnection)
+{
+    //SET THE CONNECTION PROPERTIES (output properties)
+    AVCaptureConnection *CaptureConnection = captureConnection;
+    
+    //Set landscape (if required)
+    if ([CaptureConnection isVideoOrientationSupported])
+    {
+        AVCaptureVideoOrientation orientation = AVCaptureVideoOrientationLandscapeRight;		//<<<<<SET VIDEO ORIENTATION IF LANDSCAPE
+        [CaptureConnection setVideoOrientation:orientation];
+    }
+    
+    //Set frame rate (if requried)
+    CMTimeShow(CaptureConnection.videoMinFrameDuration);
+    CMTimeShow(CaptureConnection.videoMaxFrameDuration);
+    
+    if (CaptureConnection.supportsVideoMinFrameDuration)
+        CaptureConnection.videoMinFrameDuration = CMTimeMake(1, CAPTURE_FRAMES_PER_SECOND);
+        if (CaptureConnection.supportsVideoMaxFrameDuration)
+            CaptureConnection.videoMaxFrameDuration = CMTimeMake(1, CAPTURE_FRAMES_PER_SECOND);
+            
+            CMTimeShow(CaptureConnection.videoMinFrameDuration);
+            CMTimeShow(CaptureConnection.videoMaxFrameDuration);
 }
 
 //added macros into headers in videoio_c.h
@@ -490,25 +595,34 @@ double CvCaptureCAM::getProperty(int property_id){
     CMFormatDescriptionRef format = [[ports objectAtIndex:0] formatDescription];
     CGSize s1 = CMVideoFormatDescriptionGetPresentationDimensions(format, YES, YES);
 
-    int width=(int)s1.width, height=(int)s1.height;
+    int _width=(int)s1.width, _height=(int)s1.height;
 
     [localpool drain];
 
     switch (property_id) {
-        case CV_CAP_PROP_FRAME_WIDTH:
-            return width;
-        case CV_CAP_PROP_FRAME_HEIGHT:
-            return height;
+        case cv::CAP_PROP_FRAME_WIDTH:
+            return _width;
+        case cv::CAP_PROP_FRAME_HEIGHT:
+            return _height;
+            
+        case cv::CAP_PROP_AUTO_EXPOSURE:
+            return [uvcControl getAutoExposure];
+        case cv::CAP_PROP_EXPOSURE:
+            return [uvcControl getExposure];
+        case cv::CAP_PROP_AUTO_FOCUS:
+            return [uvcControl getAutoFocus];
+         case cv::CAP_PROP_FOCUS:
+            return [uvcControl getFocus];
 
-        case CV_CAP_PROP_IOS_DEVICE_FOCUS:
+        case cv::CAP_PROP_IOS_DEVICE_FOCUS:
             return mCaptureDevice.focusMode;
-        case CV_CAP_PROP_IOS_DEVICE_EXPOSURE:
+        case cv::CAP_PROP_IOS_DEVICE_EXPOSURE:
             return mCaptureDevice.exposureMode;
-        case CV_CAP_PROP_IOS_DEVICE_FLASH:
+        case cv::CAP_PROP_IOS_DEVICE_FLASH:
             return mCaptureDevice.flashMode;
-        case CV_CAP_PROP_IOS_DEVICE_WHITEBALANCE:
+        case cv::CAP_PROP_IOS_DEVICE_WHITEBALANCE:
             return mCaptureDevice.whiteBalanceMode;
-        case CV_CAP_PROP_IOS_DEVICE_TORCH:
+        case cv::CAP_PROP_IOS_DEVICE_TORCH:
             return mCaptureDevice.torchMode;
 
         default:
@@ -677,8 +791,8 @@ fromConnection:(AVCaptureConnection *)connection{
 
 
 -(IplImage*) getOutput {
-    //return bgr_image;
-    return bgr_image_r90;
+    return bgr_image;
+    // return bgr_image_r90;
 }
 
 -(int) updateImage {
@@ -737,11 +851,11 @@ fromConnection:(AVCaptureConnection *)connection{
         // There should be an option in iOS API to rotate the buffer output orientation.
         // iOS provides hardware accelerated rotation through AVCaptureConnection class
         // I can't get it work.
-        if (bgr_image_r90 == NULL){
-            bgr_image_r90 = cvCreateImage(cvSize(height, width), IPL_DEPTH_8U, 3);
-        }
-        cvTranspose(bgr_image, bgr_image_r90);
-        cvFlip(bgr_image_r90, NULL, 1);
+        // if (bgr_image_r90 == NULL){
+        //      bgr_image_r90 = cvCreateImage(cvSize(width, height ), IPL_DEPTH_8U, 3);
+        // }
+        // cvTranspose(bgr_image, bgr_image_r90);
+        // cvFlip(bgr_image_r90, NULL, 1);
 
     }
 
