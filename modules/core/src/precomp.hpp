@@ -192,6 +192,7 @@ struct NoVec
 extern volatile bool USE_SSE2;
 extern volatile bool USE_SSE4_2;
 extern volatile bool USE_AVX;
+extern volatile bool USE_AVX2;
 
 enum { BLOCK_SIZE = 1024 };
 
@@ -254,7 +255,7 @@ struct CoreTLSData
 #endif
 };
 
-extern TLSData<CoreTLSData> coreTlsData;
+TLSData<CoreTLSData>& getCoreTlsData();
 
 #if defined(BUILD_SHARED_LIBS)
 #if defined WIN32 || defined _WIN32 || defined WINCE
